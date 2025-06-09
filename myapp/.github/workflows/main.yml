@@ -1,5 +1,3 @@
-# .github/workflows/cicd-to-eks.yml
-
 name: CI/CD to EKS
 
 on:
@@ -7,17 +5,16 @@ on:
     branches: [ main ]
 
 env:
-  AWS_ACCOUNT_ID:     ${{ secrets.AWS_ACCOUNT_ID }}
-  AWS_REGION:         ${{ secrets.AWS_REGION }}
-  ECR_REPOSITORY:     ${{ secrets.ECR_REPOSITORY }}
-  EKS_CLUSTER_NAME:   ${{ secrets.EKS_CLUSTER_NAME }}
-  HELM_RELEASE:       myapp
+  AWS_ACCOUNT_ID:   ${{ secrets.AWS_ACCOUNT_ID }}
+  AWS_REGION:       ${{ secrets.AWS_REGION }}
+  ECR_REPOSITORY:   ${{ secrets.ECR_REPOSITORY }}
+  EKS_CLUSTER_NAME: ${{ secrets.EKS_CLUSTER_NAME }}
+  HELM_RELEASE:     myapp
 
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
     outputs:
-    
       IMAGE_TAG: ${{ steps.set-tag.outputs.TAG }}
     steps:
       - name: Checkout code
@@ -32,13 +29,10 @@ jobs:
 
       - name: Login to Amazon ECR
         run: |
-          aws ecr get-login-password \
-            --region $AWS_REGION \
-          | docker login \
-            --username AWS \
-            --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY
+          aws ecr get-login-password --region $AWS_REGION \
+            | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY
 
-      - name: Build & push Docker image
+      - name: Build & Push Docker image
         run: |
           IMAGE_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY
           docker build -t $IMAGE_URI:${GITHUB_SHA} src/app
@@ -62,6 +56,11 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region:            ${{ env.AWS_REGION }}
 
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'latest'
+
       - name: Update kubeconfig for EKS
         run: |
           aws eks update-kubeconfig \
@@ -79,5 +78,3 @@ jobs:
             --set image.repository=$IMAGE_URI \
             --set image.tag=${{ needs.build-and-push.outputs.IMAGE_TAG }} \
             --atomic --timeout 5m
-
-
