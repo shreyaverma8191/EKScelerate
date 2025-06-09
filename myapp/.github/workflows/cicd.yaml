@@ -1,3 +1,5 @@
+# .github/workflows/cicd-to-eks.yml
+
 name: CI/CD to EKS
 
 on:
@@ -5,14 +7,17 @@ on:
     branches: [ main ]
 
 env:
-  AWS_REGION: us-east-1
-  ECR_REPO: myapp
-  EKS_CLUSTER: myapp-cluster
-  HELM_RELEASE: myapp
+  AWS_ACCOUNT_ID:     ${{ secrets.AWS_ACCOUNT_ID }}
+  AWS_REGION:         ${{ secrets.AWS_REGION }}
+  ECR_REPOSITORY:     ${{ secrets.ECR_REPOSITORY }}
+  EKS_CLUSTER_NAME:   ${{ secrets.EKS_CLUSTER_NAME }}
+  HELM_RELEASE:       myapp
 
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
+    outputs:
+      IMAGE_TAG: ${{ steps.set-tag.outputs.TAG }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
@@ -20,23 +25,27 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v2
         with:
-          role-to-assume: arn:aws:iam::<AWS_ACCOUNT_ID>:role/GitHubActionsCI
-          aws-region: ${{ env.AWS_REGION }}
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ env.AWS_REGION }}
 
-      - name: Login to ECR
-        uses: aws-actions/amazon-ecr-login@v1
-
-      - name: Build Docker image
+      - name: Login to Amazon ECR
         run: |
-          docker build -t $ECR_REPO:${{ github.sha }} src/app
-          docker tag $ECR_REPO:${{ github.sha }} ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/$ECR_REPO:${{ github.sha }}
+          aws ecr get-login-password \
+            --region $AWS_REGION \
+          | docker login \
+            --username AWS \
+            --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY
 
-      - name: Push to ECR
+      - name: Build & push Docker image
         run: |
-          docker push ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/$ECR_REPO:${{ github.sha }}
+          IMAGE_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY
+          docker build -t $IMAGE_URI:${GITHUB_SHA} src/app
+          docker push $IMAGE_URI:${GITHUB_SHA}
 
-      - name: Set image tag output
-        run: echo "::set-output name=image_tag::${{ github.sha }}"
+      - name: Record image tag
+        id: set-tag
+        run: echo "::set-output name=TAG::${GITHUB_SHA}"
 
   deploy:
     needs: build-and-push
@@ -48,20 +57,26 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v2
         with:
-          role-to-assume: arn:aws:iam::<AWS_ACCOUNT_ID>:role/GitHubActionsCI
-          aws-region: ${{ env.AWS_REGION }}
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ env.AWS_REGION }}
 
-      - name: Update kubeconfig
+      - name: Update kubeconfig for EKS
         run: |
-          aws eks update-kubeconfig --name $EKS_CLUSTER --region $AWS_REGION
+          aws eks update-kubeconfig \
+            --name $EKS_CLUSTER_NAME \
+            --region $AWS_REGION
 
-      - name: Install Helm
-        run: |
-          curl https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3 | bash
+      - name: Install Helm 3
+        run: curl https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3 | bash
 
       - name: Deploy via Helm
         run: |
+          IMAGE_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY
           helm upgrade --install $HELM_RELEASE charts/myapp \
             --namespace default \
-            --set image.tag=${{ needs.build-and-push.outputs.image_tag }}
+            --set image.repository=$IMAGE_URI \
+            --set image.tag=${{ needs.build-and-push.outputs.IMAGE_TAG }} \
+            --atomic --timeout 5m
+
 
