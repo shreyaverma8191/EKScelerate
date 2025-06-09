@@ -17,6 +17,7 @@ jobs:
   build-and-push:
     runs-on: ubuntu-latest
     outputs:
+    
       IMAGE_TAG: ${{ steps.set-tag.outputs.TAG }}
     steps:
       - name: Checkout code
