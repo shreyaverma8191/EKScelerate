@@ -1,0 +1,83 @@
+# .github/workflows/cicd-to-eks.yml
+
+name: CI/CD to EKS
+
+on:
+  push:
+    branches: [ main ]
+
+env:
+  AWS_ACCOUNT_ID:     ${{ secrets.AWS_ACCOUNT_ID }}
+  AWS_REGION:         ${{ secrets.AWS_REGION }}
+  ECR_REPOSITORY:     ${{ secrets.ECR_REPOSITORY }}
+  EKS_CLUSTER_NAME:   ${{ secrets.EKS_CLUSTER_NAME }}
+  HELM_RELEASE:       myapp
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    outputs:
+    
+      IMAGE_TAG: ${{ steps.set-tag.outputs.TAG }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        run: |
+          aws ecr get-login-password \
+            --region $AWS_REGION \
+          | docker login \
+            --username AWS \
+            --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY
+
+      - name: Build & push Docker image
+        run: |
+          IMAGE_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY
+          docker build -t $IMAGE_URI:${GITHUB_SHA} src/app
+          docker push $IMAGE_URI:${GITHUB_SHA}
+
+      - name: Record image tag
+        id: set-tag
+        run: echo "::set-output name=TAG::${GITHUB_SHA}"
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig for EKS
+        run: |
+          aws eks update-kubeconfig \
+            --name $EKS_CLUSTER_NAME \
+            --region $AWS_REGION
+
+      - name: Install Helm 3
+        run: curl https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3 | bash
+
+      - name: Deploy via Helm
+        run: |
+          IMAGE_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY
+          helm upgrade --install $HELM_RELEASE charts/myapp \
+            --namespace default \
+            --set image.repository=$IMAGE_URI \
+            --set image.tag=${{ needs.build-and-push.outputs.IMAGE_TAG }} \
+            --atomic --timeout 5m
+
+
